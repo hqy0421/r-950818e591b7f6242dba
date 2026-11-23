@@ -218,6 +218,35 @@ If `-csv-null` is set, the same token is used for the CSV stream and configured 
 ./flatjsonl -duck-db events.duckdb -sql-table events events.log
 ```
 
+### SQLite output layout
+
+A flattened row can grow wider than the SQLite column limit (`-sql-max-cols`, 2000 by default),
+for example when device models keep reporting new fields. The SQLite writer splits every wide row
+into shard tables according to a deterministic column plan computed once from the ordered key list:
+`<table>` holds columns 1..N, `<table>_part2` columns N+1..2N, and so on.
+
+Every shard table starts with the `_seq_id` source row key, so the original wide row can be
+reassembled one-to-one:
+
+```sql
+SELECT *
+FROM events e
+JOIN events_part2 p2 ON p2._seq_id = e._seq_id
+WHERE e._seq_id = 42;
+```
+
+Three auxiliary tables describe the data and edge cases:
+
+* `<table>_columns` — readable column catalog: one row per column with `table_name`, `column_name`,
+  `column_ordinal` (0-based, matches `pragma table_info` cid), `source_key` (original flattened
+  JSON key), `value_type` and `role` (`row_key` for `_seq_id`, `data` otherwise).
+* `<table>_absent` — missing fields per source row: `_seq_id` plus `fields`, a JSON array of column
+  names that were absent in that source row. For these columns `NULL` in the data tables means
+  "not reported"; for unlisted columns `NULL` means "reported as JSON null".
+* `<table>_duplicate_seq` — one row per duplicate delivery of a source row key. The first delivery
+  wins and is stored in the data tables; later deliveries of the same `_seq_id` (including their
+  transposed rows) are ignored and recorded here.
+
 ### Configuration file
 
 ```yaml
